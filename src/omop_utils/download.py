@@ -132,6 +132,56 @@ def download_patient_table(
     return out
 
 
+def download_table(
+    conn: mssql_python.Connection,
+    *,  # enforce kwargs
+    table: str,
+    output_dir: PathLike,
+    schema: str = "cdm",
+    fetch_size: int = 50_000,
+) -> Path:
+    """Download the non-patient table ``schema.table`` as a single CSV.
+
+    The table is written to ``<output_dir>/<table>.csv`` with a header.
+    It is read in one pass into ``<table>.csv.tmp`` and renamed into place when complete, so the ``.csv`` is always whole.
+    A stale ``.tmp`` from an interrupted run is overwritten.
+    If the ``.csv`` already exists, the download is skipped.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final = out_dir / f"{table}.csv"
+    tmp = final.with_name(final.name + ".tmp")
+
+    if final.exists():
+        log.info(
+            "%s is already downloaded; skipping (delete %s to re-download)",
+            table,
+            final,
+        )
+        return final
+
+    qualified = f"{_q(schema)}.{_q(table)}"
+    rows = 0
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {qualified}")
+        with open(tmp, "wb") as f:
+            with (
+                cur.arrow_reader(batch_size=fetch_size) as reader,
+                pacsv.CSVWriter(f, reader.schema) as writer,
+            ):
+                for batch in reader:
+                    writer.write_batch(batch)
+                    rows += batch.num_rows
+            # Without this, a machine crash after the rename could leave a
+            # truncated file under the final name.
+            f.flush()
+            os.fsync(f.fileno())
+    os.replace(tmp, final)  # atomic: the file appears whole or not at all
+
+    log.info("Finished %s (%d rows), written to %s", table, rows, final)
+    return final
+
+
 def assert_clustered_on(conn, *, schema: str, table: str, column: str) -> None:
     """Raise unless ``column`` is the leading key of the table's clustered index.
 

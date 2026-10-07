@@ -3,20 +3,26 @@ import logging
 from pathlib import Path
 
 from .connection import connect
-from .download import download_patient_table
+from .download import download_patient_table, download_table
 
 log = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download OMOP tables from SQL Server as per-patient CSV chunks."
+        description="Download OMOP tables from SQL Server as CSVs."
     )
     parser.add_argument(
-        "--tables",
+        "--patient-tables",
         nargs="+",
-        required=True,
-        help="Tables to download, e.g. --tables person measurement",
+        default=[],
+        help="Patient tables to download as per-patient CSV chunks, e.g. --patient-tables person measurement",
+    )
+    parser.add_argument(
+        "--non-patient-tables",
+        nargs="+",
+        default=[],
+        help="Non-patient tables to download as a single CSV, e.g. --non-patient-tables concept cdm_source",
     )
     parser.add_argument(
         "--credentials", type=Path, required=True, help="JSON credential file"
@@ -27,12 +33,15 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="Root output directory, each table is written to <output-dir>/<table>/",
+        help="Root output directory; patient tables are written to <output-dir>/<table>/, non-patient tables to <output-dir>/<table>.csv",
     )
     parser.add_argument("--patients-per-chunk", type=int, default=1_000)
     parser.add_argument("--fetch-size", type=int, default=50_000)
     parser.add_argument("-v", "--verbose", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not (args.patient_tables or args.non_patient_tables):
+        parser.error("specify --patient-tables and/or --non-patient-tables")
+    return args
 
 
 def main() -> None:
@@ -43,7 +52,7 @@ def main() -> None:
     )
 
     with connect(credential_file=args.credentials, database=args.database) as conn:
-        for table in args.tables:
+        for table in args.patient_tables:
             download_patient_table(
                 conn=conn,
                 table=table,
@@ -54,6 +63,14 @@ def main() -> None:
                 on_progress=lambda rows, t=table: log.info(
                     "%s: %s rows", t, f"{rows:,}"
                 ),
+            )
+        for table in args.non_patient_tables:
+            download_table(
+                conn=conn,
+                table=table,
+                output_dir=args.output_dir,
+                schema=args.schema,
+                fetch_size=args.fetch_size,
             )
 
 
