@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .connection import connect
 from .download import download_patient_table, download_table
+from .logs import LOG_FORMAT, log_to_file
 
 log = logging.getLogger(__name__)
 
@@ -46,11 +47,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format=LOG_FORMAT)
+    with log_to_file(args.output_dir, "omop_utils", level=level):
+        _run(args)
 
+
+def _run(args: argparse.Namespace) -> None:
     with connect(credential_file=args.credentials, database=args.database) as conn:
         for table in args.patient_tables:
             download_patient_table(

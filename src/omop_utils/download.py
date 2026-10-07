@@ -1,14 +1,14 @@
-import functools
 import logging
 import os
 import re
 from collections.abc import Callable
-from datetime import datetime
 from os import PathLike
 from pathlib import Path
 
 import mssql_python
 import pyarrow.csv as pacsv
+
+from .logs import logs_to_output_dir
 
 log = logging.getLogger(__name__)
 
@@ -16,40 +16,12 @@ _CHUNK_NAME = re.compile(r"^(-?\d+)-(-?\d+)\.csv$")
 _COMPLETE = "_COMPLETE"
 
 
-def _logs_to_output_dir(fn):
-    """Also write this module's log records to ``<output_dir>/<table>_<timestamp>.log``.
-
-    Each call gets its own timestamped file, so a resumed download keeps earlier logs.
-    """
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        out_dir = Path(kwargs["output_dir"])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-        handler = logging.FileHandler(out_dir / f"{kwargs['table']}_{stamp}.log")
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        old_level = log.level
-        if log.getEffectiveLevel() > logging.INFO:
-            log.setLevel(logging.INFO)
-        log.addHandler(handler)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            log.removeHandler(handler)
-            log.setLevel(old_level)
-            handler.close()
-
-    return wrapper
-
-
 def _q(identifier: str) -> str:
     # SQL Server specific quoting
     return "[" + identifier.replace("]", "]]") + "]"
 
 
-@_logs_to_output_dir
+@logs_to_output_dir
 def download_patient_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
@@ -173,7 +145,7 @@ def download_patient_table(
     return out
 
 
-@_logs_to_output_dir
+@logs_to_output_dir
 def download_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
