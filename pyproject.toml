@@ -18,6 +18,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "jupyterlab>=4.6.4",
     "pre-commit>=4.6.2",
 ]
 
