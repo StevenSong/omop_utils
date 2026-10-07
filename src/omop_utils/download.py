@@ -8,8 +8,6 @@ from pathlib import Path
 import mssql_python
 import pyarrow.csv as pacsv
 
-from .logs import logs_to_output_dir
-
 log = logging.getLogger(__name__)
 
 _CHUNK_NAME = re.compile(r"^(-?\d+)-(-?\d+)\.csv$")
@@ -21,7 +19,6 @@ def _q(identifier: str) -> str:
     return "[" + identifier.replace("]", "]]") + "]"
 
 
-@logs_to_output_dir
 def download_patient_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
@@ -145,7 +142,6 @@ def download_patient_table(
     return out
 
 
-@logs_to_output_dir
 def download_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
