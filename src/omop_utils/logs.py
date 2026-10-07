@@ -1,6 +1,6 @@
 import contextlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import datetime
 from os import PathLike
 from pathlib import Path
@@ -11,11 +11,11 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 @contextlib.contextmanager
 def log_to_file(
     directory: PathLike,
+    *,  # enforce kwargs
     name: str,
-    *,
     logger: logging.Logger | None = None,
     level: int = logging.INFO,
-) -> Iterator[Path]:
+) -> Generator[Path]:
     """Also write ``logger``'s records to ``<directory>/<name>_<timestamp>.log``.
 
     ``logger`` defaults to the root logger.

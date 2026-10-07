@@ -39,7 +39,7 @@ def connect(
     return conn
 
 
-def assert_read_only(conn):
+def assert_read_only(conn: mssql_python.Connection) -> None:
     with conn.cursor() as cursor:
         cursor.execute("""
             SELECT
