@@ -1,7 +1,9 @@
+import gzip as gz
 import logging
 import os
 import re
 from collections.abc import Callable
+from contextlib import nullcontext
 from os import PathLike
 from pathlib import Path
 
@@ -10,7 +12,7 @@ import pyarrow.csv as pacsv
 
 log = logging.getLogger(__name__)
 
-_CHUNK_NAME = re.compile(r"^(-?\d+)-(-?\d+)\.csv$")
+_CHUNK_NAME = re.compile(r"^(-?\d+)-(-?\d+)\.csv(?:\.gz)?$")
 _COMPLETE = "_COMPLETE"
 
 
@@ -31,15 +33,17 @@ def download_patient_table(
     fetch_size: int = 50_000,
     on_progress: Callable[[int], None] | None = None,
     check_clustered: bool = True,
+    gzip: bool = True,
 ) -> Path:
     """Download ``schema.table`` as a directory of CSV chunks of whole patients.
 
-    Chunks of whole patients are written to ``<output_dir>/<table>/<first_id>-<last_id>.csv``.
+    Chunks of whole patients are written to ``<output_dir>/<table>/<first_id>-<last_id>.csv.gz``
+    (``.csv`` if ``gzip`` is false).
     Each file has a header and holds every row for the patients in its inclusive person ID range.
 
-    In-progress chunks are suffixed with ``.tmp`` and renamed into place when complete, so every ``.csv`` in the directory is a whole chunk.
+    In-progress chunks are suffixed with ``.tmp`` and renamed into place when complete, so every ``.csv``/``.csv.gz`` in the directory is a whole chunk.
     If interrupted, ``.tmp`` files are stale and deleted on resume.
-    On resume, downloading continues after the highest person ID among the finished chunks.
+    On resume, downloading continues after the highest person ID among the finished chunks (of either extension).
     This assumes that the table does not change between runs.
     When the table download is done, an empty ``_COMPLETE`` marker is written.
     """
@@ -51,10 +55,10 @@ def download_patient_table(
     marker = out / _COMPLETE
 
     # removed stale interrupted chunks
-    for tmp in out.glob("*.csv.tmp"):
+    for tmp in [*out.glob("*.csv.tmp"), *out.glob("*.csv.gz.tmp")]:
         tmp.unlink()
 
-    chunks = sorted(out.glob("*.csv"))
+    chunks = [*out.glob("*.csv"), *out.glob("*.csv.gz")]
     if marker.exists():
         log.info(
             "%s is already complete; skipping (delete %s to re-download)", table, out
@@ -65,7 +69,7 @@ def download_patient_table(
     qualified = f"{_q(schema)}.{_q(table)}"
     pid = _q(person_column)
 
-    # chunk names are <first_id>-<last_id>.csv
+    # chunk names are <first_id>-<last_id>.csv[.gz]
     last_read_pid = max(
         (int(_CHUNK_NAME.match(p.name).group(2)) for p in chunks), default=None
     )
@@ -113,25 +117,12 @@ def download_patient_table(
                 break
 
             # read the chunk and write to disk
-            final = out / f"{chunk_lo:020d}-{chunk_hi:020d}.csv"
-            tmp = final.with_name(final.name + ".tmp")
+            final = out / f"{chunk_lo:020d}-{chunk_hi:020d}{_suffix(gzip)}"
             cur.execute(
                 f"SELECT * FROM {qualified} WHERE {pid} BETWEEN %(chunk_lo)s AND %(chunk_hi)s ORDER BY {pid}",
                 {"chunk_lo": chunk_lo, "chunk_hi": chunk_hi},
             )
-            with open(tmp, "wb") as f:
-                with (
-                    cur.arrow_reader(batch_size=fetch_size) as reader,
-                    pacsv.CSVWriter(f, reader.schema) as writer,
-                ):
-                    for batch in reader:
-                        writer.write_batch(batch)
-                        rows += batch.num_rows
-                # Without this, a machine crash after the rename could leave a
-                # truncated file under the final name.
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, final)  # atomic: the chunk appears whole or not at all
+            rows += _write_csv(cur, final, fetch_size=fetch_size, gzip=gzip)
 
             last_read_pid = chunk_hi
             if on_progress:
@@ -149,50 +140,71 @@ def download_table(
     output_dir: PathLike,
     schema: str = "cdm",
     fetch_size: int = 50_000,
+    gzip: bool = True,
 ) -> Path:
     """Download the non-patient table ``schema.table`` as a single CSV.
 
-    The table is written to ``<output_dir>/<table>.csv`` with a header.
-    It is read in one pass into ``<table>.csv.tmp`` and renamed into place when complete, so the ``.csv`` is always whole.
+    The table is written to ``<output_dir>/<table>.csv.gz`` (``.csv`` if ``gzip`` is false) with a header.
+    It is read in one pass into ``<table>.csv[.gz].tmp`` and renamed into place when complete, so the output is always whole.
     A stale ``.tmp`` from an interrupted run is overwritten.
-    If the ``.csv`` already exists, the download is skipped.
+    If the ``.csv`` or ``.csv.gz`` already exists, the download is skipped.
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    final = out_dir / f"{table}.csv"
-    tmp = final.with_name(final.name + ".tmp")
+    final = out_dir / f"{table}{_suffix(gzip)}"
 
-    if final.exists():
-        log.info(
-            "%s is already downloaded; skipping (delete %s to re-download)",
-            table,
-            final,
-        )
-        return final
+    for existing in (out_dir / f"{table}.csv", out_dir / f"{table}.csv.gz"):
+        if existing.exists():
+            log.info(
+                "%s is already downloaded; skipping (delete %s to re-download)",
+                table,
+                existing,
+            )
+            return existing
 
     qualified = f"{_q(schema)}.{_q(table)}"
     log.info(
         "%s has %d rows to download", table, _metadata_row_count(conn, schema, table)
     )
-    rows = 0
     with conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {qualified}")
-        with open(tmp, "wb") as f:
-            with (
-                cur.arrow_reader(batch_size=fetch_size) as reader,
-                pacsv.CSVWriter(f, reader.schema) as writer,
-            ):
-                for batch in reader:
-                    writer.write_batch(batch)
-                    rows += batch.num_rows
-            # Without this, a machine crash after the rename could leave a
-            # truncated file under the final name.
-            f.flush()
-            os.fsync(f.fileno())
-    os.replace(tmp, final)  # atomic: the file appears whole or not at all
+        rows = _write_csv(cur, final, fetch_size=fetch_size, gzip=gzip)
 
     log.info("Finished %s (%d rows), written to %s", table, rows, final)
     return final
+
+
+def _suffix(gzip: bool) -> str:
+    return ".csv.gz" if gzip else ".csv"
+
+
+def _write_csv(cur, final: Path, *, fetch_size: int, gzip: bool) -> int:
+    """Write the cursor's result set to ``final`` as CSV, returning the row count.
+
+    Rows are written to ``final`` + ``.tmp`` and renamed into place when complete.
+    """
+    tmp = final.with_name(final.name + ".tmp")
+    rows = 0
+    with open(tmp, "wb") as f:
+        # GzipFile doesn't close f, so it can still be fsynced below
+        with (
+            (
+                gz.GzipFile(fileobj=f, mode="wb", compresslevel=6)
+                if gzip
+                else nullcontext(f)
+            ) as sink,
+            cur.arrow_reader(batch_size=fetch_size) as reader,
+            pacsv.CSVWriter(sink, reader.schema) as writer,
+        ):
+            for batch in reader:
+                writer.write_batch(batch)
+                rows += batch.num_rows
+        # Without this, a machine crash after the rename could leave a
+        # truncated file under the final name.
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, final)  # atomic: the file appears whole or not at all
+    return rows
 
 
 def _metadata_row_count(conn, schema: str, table: str) -> int:

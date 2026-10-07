@@ -1,9 +1,10 @@
 # omop_utils
 
-Utilities for downloading [OMOP CDM](https://ohdsi.github.io/CommonDataModel/) tables from a SQL Server database (e.g. AWS RDS) as CSV files.
+Utilities for downloading [OMOP CDM](https://ohdsi.github.io/CommonDataModel/) tables from a SQL Server database (e.g. AWS RDS) as gzipped CSV files.
 
-- **Patient tables** (e.g. `person`, `measurement`) are written as chunks of whole patients, `<output-dir>/<table>/<first_id>-<last_id>.csv`. Downloads are resumable.
-- **Non-patient tables** (e.g. `concept`, `cdm_source`) are written as a single `<output-dir>/<table>.csv`.
+- **Patient tables** (e.g. `person`, `measurement`) are written as chunks of whole patients, `<output-dir>/<table>/<first_id>-<last_id>.csv.gz`. Downloads are resumable.
+- **Non-patient tables** (e.g. `concept`, `cdm_source`) are written as a single `<output-dir>/<table>.csv.gz`.
+- Pass `--no-gzip` (or `gzip=False`) to write plain `.csv` instead.
 - Connections are refused if the account has write permissions on the database (read-only check).
 
 ## Setup
@@ -76,15 +77,26 @@ uv run python -m omop_utils \
 | `--schema` | `cdm` | Schema containing the tables |
 | `--patients-per-chunk` | `1000` | Patients per chunk file |
 | `--fetch-size` | `50000` | Rows per Arrow batch |
+| `--no-gzip` | | Write plain `.csv` instead of `.csv.gz` |
 | `-v`, `--verbose` | | Debug logging |
 
 At least one of `--patient-tables` / `--non-patient-tables` is required.
 
 ### Resuming and re-running
 
-- Chunks are written to `*.csv.tmp` and atomically renamed, so every `.csv` is complete. Interrupted runs resume after the highest finished person ID (this assumes the table doesn't change between runs).
-- A finished patient table gets an empty `_COMPLETE` marker and is skipped on later runs; delete the table directory to re-download. A non-patient table is skipped if its `.csv` exists.
+- Chunks are written to `*.csv.gz.tmp` (or `*.csv.tmp`) and atomically renamed, so every `.csv.gz`/`.csv` is complete. Interrupted runs resume after the highest finished person ID, whichever extension the finished chunks have (this assumes the table doesn't change between runs).
+- A finished patient table gets an empty `_COMPLETE` marker and is skipped on later runs; delete the table directory to re-download. A non-patient table is skipped if its `.csv.gz` or `.csv` exists.
 - Patient tables must be clustered on `person_id` (checked before download) so chunk queries can seek in order.
+
+### Compressing an existing download
+
+[`utils/gzip_dir.py`](utils/gzip_dir.py) gzips existing files in place, e.g. output from an older or `--no-gzip` run. It uses only the standard library. By default it compresses every `*.csv` under the directory, recursively, to `*.csv.gz` and deletes the originals. Use `--keep` to keep them, or `--pattern` to match other files. Output is written to a temp file and renamed into place, so interrupted runs are safe to repeat.
+
+```bash
+python utils/gzip_dir.py out/
+```
+
+Resumed downloads accept chunks with either extension, so you can compress a partial download and then continue it.
 
 ### Python API
 

@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download OMOP tables from SQL Server as CSVs."
+        description="Download OMOP tables from SQL Server as gzipped CSVs."
     )
     parser.add_argument(
         "--patient-tables",
@@ -34,10 +34,16 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="Root output directory; patient tables are written to <output-dir>/<table>/, non-patient tables to <output-dir>/<table>.csv",
+        help="Root output directory; patient tables are written to <output-dir>/<table>/, non-patient tables to <output-dir>/<table>.csv.gz",
     )
     parser.add_argument("--patients-per-chunk", type=int, default=1_000)
     parser.add_argument("--fetch-size", type=int, default=50_000)
+    parser.add_argument(
+        "--no-gzip",
+        dest="gzip",
+        action="store_false",
+        help="Write plain .csv files instead of .csv.gz",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     if not (args.patient_tables or args.non_patient_tables):
@@ -63,6 +69,7 @@ def _run(args: argparse.Namespace) -> None:
                 schema=args.schema,
                 patients_per_chunk=args.patients_per_chunk,
                 fetch_size=args.fetch_size,
+                gzip=args.gzip,
                 on_progress=lambda rows, t=table: log.info(
                     "%s: %s rows", t, f"{rows:,}"
                 ),
@@ -74,6 +81,7 @@ def _run(args: argparse.Namespace) -> None:
                 output_dir=args.output_dir,
                 schema=args.schema,
                 fetch_size=args.fetch_size,
+                gzip=args.gzip,
             )
 
 
