@@ -1,7 +1,9 @@
+import functools
 import logging
 import os
 import re
 from collections.abc import Callable
+from datetime import datetime
 from os import PathLike
 from pathlib import Path
 
@@ -14,11 +16,40 @@ _CHUNK_NAME = re.compile(r"^(-?\d+)-(-?\d+)\.csv$")
 _COMPLETE = "_COMPLETE"
 
 
+def _logs_to_output_dir(fn):
+    """Also write this module's log records to ``<output_dir>/<table>_<timestamp>.log``.
+
+    Each call gets its own timestamped file, so a resumed download keeps earlier logs.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        out_dir = Path(kwargs["output_dir"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        handler = logging.FileHandler(out_dir / f"{kwargs['table']}_{stamp}.log")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        old_level = log.level
+        if log.getEffectiveLevel() > logging.INFO:
+            log.setLevel(logging.INFO)
+        log.addHandler(handler)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(old_level)
+            handler.close()
+
+    return wrapper
+
+
 def _q(identifier: str) -> str:
     # SQL Server specific quoting
     return "[" + identifier.replace("]", "]]") + "]"
 
 
+@_logs_to_output_dir
 def download_patient_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
@@ -26,6 +57,7 @@ def download_patient_table(
     output_dir: PathLike,
     schema: str = "cdm",
     person_column: str = "person_id",
+    person_table: str = "person",
     patients_per_chunk: int = 1_000,
     fetch_size: int = 50_000,
     on_progress: Callable[[int], None] | None = None,
@@ -75,6 +107,15 @@ def download_patient_table(
             last_read_pid,
             out,
         )
+
+    _log_remaining_estimate(
+        conn,
+        schema=schema,
+        table=table,
+        person_table=person_table,
+        person_column=person_column,
+        last_read_pid=last_read_pid,
+    )
 
     rows = 0
     with conn.cursor() as cur:
@@ -132,6 +173,7 @@ def download_patient_table(
     return out
 
 
+@_logs_to_output_dir
 def download_table(
     conn: mssql_python.Connection,
     *,  # enforce kwargs
@@ -161,6 +203,9 @@ def download_table(
         return final
 
     qualified = f"{_q(schema)}.{_q(table)}"
+    log.info(
+        "%s has %d rows to download", table, _metadata_row_count(conn, schema, table)
+    )
     rows = 0
     with conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {qualified}")
@@ -180,6 +225,59 @@ def download_table(
 
     log.info("Finished %s (%d rows), written to %s", table, rows, final)
     return final
+
+
+def _metadata_row_count(conn, schema: str, table: str) -> int:
+    """Row count of ``schema.table`` from catalog metadata (no table scan)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT SUM(rows)
+            FROM sys.partitions
+            WHERE object_id = OBJECT_ID(?)
+              AND index_id IN (0, 1)  -- heap or clustered index
+            """,
+            [f"{_q(schema)}.{_q(table)}"],
+        )
+        return int(cur.fetchone()[0] or 0)
+
+
+def _log_remaining_estimate(
+    conn,
+    *,
+    schema: str,
+    table: str,
+    person_table: str,
+    person_column: str,
+    last_read_pid: int | None,
+) -> None:
+    """Log the approximate rows left to download for a patient table.
+
+    Scales the table's metadata row count by the fraction of patients with ID
+    above ``last_read_pid``. This is approximate since rows per patient vary.
+    """
+    total = _metadata_row_count(conn, schema, table)
+    if last_read_pid is None:
+        log.info("%s has %d rows to download", table, total)
+        return
+
+    people = _q(schema) + "." + _q(person_table)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT_BIG(*), COUNT_BIG(CASE WHEN {_q(person_column)} > ? THEN 1 END) FROM {people}",
+            [last_read_pid],
+        )
+        n_people, n_remaining = cur.fetchone()
+    if not n_people:
+        return
+    log.info(
+        "%s has ~%d of %d rows remaining (%d of %d patients left)",
+        table,
+        round(total * n_remaining / n_people),
+        total,
+        n_remaining,
+        n_people,
+    )
 
 
 def assert_clustered_on(conn, *, schema: str, table: str, column: str) -> None:
