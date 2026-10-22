@@ -99,3 +99,56 @@ with connect(credential_file="creds.json", database="my_omop_db") as conn:
     )
     download_table(conn, table="concept", output_dir="out")
 ```
+
+## Converting to MEDS
+
+`omop-to-meds` converts a download to [MEDS](https://github.com/Medical-Event-Data-Standard/meds) 0.3.3. It is a port of `meds_etl_omop` from [meds_etl](https://github.com/Medical-Event-Data-Standard/meds_etl) and maps the same tables to the same events. The difference is in how the work is split, which keeps memory bounded:
+
+- Each output shard is a contiguous `person_id` range. A shard reads only the chunks (and, via Parquet statistics, row groups) that overlap its range, then maps, sorts and writes them as `data/data_<shard>.parquet`. There is no MEDS Unsorted intermediate and no second shuffle.
+- Concept IDs are mapped with a polars lookup that is loaded once per worker, not with pickled Python dicts copied into every task.
+- Shards are written atomically. Re-running with the same arguments resumes and skips shards that already exist; changing `--num-shards` requires a fresh output directory.
+
+```bash
+uv run omop-to-meds out meds --num-shards 100 --num-proc 4
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--num-shards` | `100` | Number of output shards (person ID ranges, split evenly by person count) |
+| `--num-proc` | `1` | Shards built in parallel |
+| `--threads-per-proc` | CPUs / `--num-proc` | Polars threads per process |
+| `--omop-version` | `5.4` | `5.3` or `5.4` (`discharge_to_concept_id` vs `discharged_to_concept_id`) |
+
+Peak memory is roughly `--num-proc` × (one shard's events, while sorting) plus the concept lookup per process. If a run runs out of memory, raise `--num-shards` or lower `--num-proc`. The `person` table and the `concept` table are required. Missing event tables are skipped.
+
+Shard membership differs from `meds_etl_omop`, which assigns subjects to shards by hash, so check the output with `meds-compare` instead of comparing files directly.
+
+## Checking equivalence
+
+`meds-compare` checks that two MEDS datasets contain the same events, however their subjects are sharded:
+
+```bash
+uv run meds-compare meds_etl_output meds
+```
+
+It checks that:
+
+- `metadata/dataset.json` matches, apart from `etl_name` / `etl_version`;
+- `metadata/codes.parquet` holds the same rows, in any order;
+- the data files have the same columns and types;
+- each dataset is valid MEDS: no null `subject_id` / `code`, files sorted by `(subject_id, time)`, and each subject in exactly one file;
+- every subject has the same multiset of event rows in both datasets.
+
+Row order within a timestamp is not compared. The meds_etl polars backend breaks ties by `code`, and the cpp backend doesn't break them at all.
+
+Events are compared in buckets of contiguous subject IDs (`--rows-per-bucket`, default 2M rows per side), so memory stays bounded. When rows differ, it reports which subjects and example rows. The exit code is 0 only if the datasets are equivalent.
+
+The meds_etl cpp backend writes empty strings as null. To compare against its output, pass `--empty-strings-as-null`; the report suggests this when it is the only difference. `--ignore-columns` leaves columns out of the comparison entirely.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+The tests cover the per-table event mapping and shard file selection. To check a conversion end to end, run `meds-compare` against a `meds_etl_omop` output of the same data.

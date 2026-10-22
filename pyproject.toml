@@ -5,12 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "meds==0.3.3",
     "mssql-python>=1.15.0",
+    "polars>=1.30,<2",
     "pyarrow>=25.0.1",
 ]
 
 [project.scripts]
 omop-utils = "omop_utils.__main__:main"
+omop-to-meds = "omop_utils.to_meds:main"
+meds-compare = "omop_utils.compare_meds:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
@@ -20,7 +24,11 @@ build-backend = "uv_build"
 dev = [
     "jupyterlab>=4.6.4",
     "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
 ]
 
 [tool.ruff.lint]
 extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
