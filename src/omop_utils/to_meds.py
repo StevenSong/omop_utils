@@ -13,7 +13,6 @@ The input is expected to be laid out as written by :mod:`omop_utils.download`: p
 Parquet chunks, non-patient tables (``concept``, ``concept_relationship``, ``cdm_source``) as single Parquet files.
 """
 
-import argparse
 import importlib.metadata
 import json
 import logging
@@ -29,8 +28,6 @@ import meds
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from .logs import LOG_FORMAT, log_to_file
 
 log = logging.getLogger(__name__)
 
@@ -794,53 +791,3 @@ def _log_shards(results: Iterable[tuple[int, int]], n: int) -> int:
             total += rows
             log.info("[%d/%d] shard %d: %s events", done, n, index, f"{rows:,}")
     return total
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="omop-to-meds",
-        description="Convert an omop_utils OMOP download to MEDS 0.3.3, one person ID range per shard.",
-    )
-    parser.add_argument(
-        "src",
-        type=Path,
-        help="OMOP download directory (the --output-dir of omop_utils)",
-    )
-    parser.add_argument("dest", type=Path, help="Output MEDS directory")
-    parser.add_argument(
-        "--num-shards",
-        type=int,
-        default=100,
-        help="Number of output shards (contiguous person ID ranges); more shards means less memory per shard",
-    )
-    parser.add_argument(
-        "--num-proc",
-        type=int,
-        default=1,
-        help="Shards built in parallel; memory scales with this",
-    )
-    parser.add_argument(
-        "--threads-per-proc",
-        type=int,
-        default=None,
-        help="Polars threads per process (default: CPUs / num-proc)",
-    )
-    parser.add_argument("--omop-version", choices=["5.3", "5.4"], default="5.4")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    args = parser.parse_args()
-
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level, format=LOG_FORMAT)
-    with log_to_file(args.dest, name="omop_to_meds", level=level):
-        convert(
-            args.src,
-            args.dest,
-            num_shards=args.num_shards,
-            num_proc=args.num_proc,
-            threads_per_proc=args.threads_per_proc,
-            omop_version=args.omop_version,
-        )
-
-
-if __name__ == "__main__":
-    main()

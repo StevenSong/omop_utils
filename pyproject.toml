@@ -13,8 +13,6 @@ dependencies = [
 
 [project.scripts]
 omop-utils = "omop_utils.__main__:main"
-omop-to-meds = "omop_utils.to_meds:main"
-meds-compare = "omop_utils.compare_meds:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

@@ -19,10 +19,8 @@ Events are compared in buckets of contiguous subject IDs so memory stays bounded
 by ``subject_id``, so Parquet statistics let each bucket skip most row groups.
 """
 
-import argparse
 import json
 import logging
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from os import PathLike
@@ -30,8 +28,6 @@ from pathlib import Path
 
 import polars as pl
 import pyarrow.parquet as pq
-
-from .logs import LOG_FORMAT
 
 log = logging.getLogger(__name__)
 
@@ -416,55 +412,3 @@ def compare(
     else:
         log.error("NOT EQUIVALENT: %d problem(s) found", len(report.problems))
     return report
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="meds-compare",
-        description="Check two MEDS datasets contain the same events, ignoring sharding.",
-    )
-    parser.add_argument(
-        "old", type=Path, help="Reference MEDS directory (e.g. from meds_etl_omop)"
-    )
-    parser.add_argument(
-        "new", type=Path, help="MEDS directory to check (e.g. from omop-to-meds)"
-    )
-    parser.add_argument(
-        "--ignore-columns",
-        nargs="+",
-        default=[],
-        help="Columns to leave out of the event comparison",
-    )
-    parser.add_argument(
-        "--rows-per-bucket",
-        type=int,
-        default=2_000_000,
-        help="Rows per side compared at once; lower to save memory",
-    )
-    parser.add_argument(
-        "--max-examples",
-        type=int,
-        default=5,
-        help="Example rows to show per difference",
-    )
-    parser.add_argument(
-        "--empty-strings-as-null",
-        action="store_true",
-        help="Treat empty strings as null on both sides (the meds_etl cpp backend writes them as null)",
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    report = compare(
-        args.old,
-        args.new,
-        ignore_columns=args.ignore_columns,
-        rows_per_bucket=args.rows_per_bucket,
-        max_examples=args.max_examples,
-        empty_strings_as_null=args.empty_strings_as_null,
-    )
-    sys.exit(0 if report.equivalent else 1)
-
-
-if __name__ == "__main__":
-    main()

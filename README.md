@@ -56,10 +56,10 @@ Create a JSON file with the connection details (keep it out of version control):
 
 ## Usage
 
-Run the CLI as a module:
+Run the CLI as a module. It has three subcommands: `download`, `to-meds` and `compare` (see `uv run python -m omop_utils <subcommand> --help`). To download:
 
 ```bash
-uv run python -m omop_utils \
+uv run python -m omop_utils download \
   --credentials creds.json \
   --database my_omop_db \
   --output-dir out \
@@ -102,14 +102,14 @@ with connect(credential_file="creds.json", database="my_omop_db") as conn:
 
 ## Converting to MEDS
 
-`omop-to-meds` converts a download to [MEDS](https://github.com/Medical-Event-Data-Standard/meds) 0.3.3. It is a port of `meds_etl_omop` from [meds_etl](https://github.com/Medical-Event-Data-Standard/meds_etl) and maps the same tables to the same events. The difference is in how the work is split, which keeps memory bounded:
+`to-meds` converts a download to [MEDS](https://github.com/Medical-Event-Data-Standard/meds) 0.3.3. It is a port of `meds_etl_omop` from [meds_etl](https://github.com/Medical-Event-Data-Standard/meds_etl) and maps the same tables to the same events. The difference is in how the work is split, which keeps memory bounded:
 
 - Each output shard is a contiguous `person_id` range. A shard reads only the chunks (and, via Parquet statistics, row groups) that overlap its range, then maps, sorts and writes them as `data/data_<shard>.parquet`. There is no MEDS Unsorted intermediate and no second shuffle.
 - Concept IDs are mapped with a polars lookup that is loaded once per worker, not with pickled Python dicts copied into every task.
 - Shards are written atomically. Re-running with the same arguments resumes and skips shards that already exist; changing `--num-shards` requires a fresh output directory.
 
 ```bash
-uv run omop-to-meds out meds --num-shards 100 --num-proc 4
+uv run python -m omop_utils to-meds out meds --num-shards 100 --num-proc 4
 ```
 
 | Option | Default | Description |
@@ -121,14 +121,14 @@ uv run omop-to-meds out meds --num-shards 100 --num-proc 4
 
 Peak memory is roughly `--num-proc` × (one shard's events, while sorting) plus the concept lookup per process. If a run runs out of memory, raise `--num-shards` or lower `--num-proc`. The `person` table and the `concept` table are required. Missing event tables are skipped.
 
-Shard membership differs from `meds_etl_omop`, which assigns subjects to shards by hash, so check the output with `meds-compare` instead of comparing files directly.
+Shard membership differs from `meds_etl_omop`, which assigns subjects to shards by hash, so check the output with `compare` instead of comparing files directly.
 
 ## Checking equivalence
 
-`meds-compare` checks that two MEDS datasets contain the same events, however their subjects are sharded:
+`compare` checks that two MEDS datasets contain the same events, however their subjects are sharded:
 
 ```bash
-uv run meds-compare meds_etl_output meds
+uv run python -m omop_utils compare meds_etl_output meds
 ```
 
 It checks that:
@@ -151,4 +151,4 @@ The meds_etl cpp backend writes empty strings as null. To compare against its ou
 uv run pytest
 ```
 
-The tests cover the per-table event mapping and shard file selection. To check a conversion end to end, run `meds-compare` against a `meds_etl_omop` output of the same data.
+The tests cover the per-table event mapping and shard file selection. To check a conversion end to end, run `compare` against a `meds_etl_omop` output of the same data.
